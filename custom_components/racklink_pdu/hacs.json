@@ -1,0 +1,9 @@
+{
+  "name": "RackLink PDU",
+  "content_in_root": false,
+  "domains": ["racklink_pdu"],
+  "iot_class": "Local Polling",
+  "zip_release": false,
+  "filename": "custom_components/racklink_pdu/",
+  "homeassistant": "2021.12.0"
+}
