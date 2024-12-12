@@ -5,6 +5,9 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN
 from .api import RackLinkAPIError
+import logging
+
+_LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
     coordinator = hass.data[DOMAIN][entry.entry_id]
@@ -52,6 +55,6 @@ class RackLinkOutletSwitch(CoordinatorEntity, SwitchEntity):
         api = self.coordinator.api
         try:
             await api.set_outlet_state(self._outlet_number, on)
-        except RackLinkAPIError:
-            pass
+        except RackLinkAPIError as e:
+            _LOGGER.debug("Failed to set outlet state: %s", e)
         await self.coordinator.async_request_refresh()

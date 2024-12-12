@@ -1,6 +1,8 @@
 import asyncio
-import time
+import logging
 from .const import MAX_RETRIES, RECONNECT_DELAY
+
+_LOGGER = logging.getLogger(__name__)
 
 class RackLinkAPIError(Exception):
     pass
@@ -28,17 +30,24 @@ class RackLinkAPI:
         self._stopped = False
 
     async def connect_persistent(self):
-        """Connect and login, start read loop."""
+        """Connect and login, start read loop, and perform initial handshake."""
         await self.close()
         for attempt in range(MAX_RETRIES):
             try:
+                _LOGGER.debug("Connecting to %s:%s", self.host, self.port)
                 self.reader, self.writer = await asyncio.open_connection(self.host, self.port)
                 await self._login()
                 self.connected = True
                 self._stopped = False
                 self._read_task = asyncio.create_task(self._read_loop())
+                # After login, we either wait for the device to send a PING or we initiate a ping to finalize handshake.
+                # Send a ping to ensure the device is ready.
+                _LOGGER.debug("Sending initial ping after login.")
+                await self.ping()
+                _LOGGER.debug("Initial handshake complete.")
                 return
-            except Exception:
+            except Exception as e:
+                _LOGGER.debug("Connection attempt failed: %s", e)
                 await self.close()
                 await asyncio.sleep(RECONNECT_DELAY)
         raise RackLinkAPIError("Could not connect and login after retries")
@@ -66,6 +75,7 @@ class RackLinkAPI:
         status = resp[3]
         if status != 0x01:
             raise RackLinkAuthenticationError("Invalid credentials")
+        _LOGGER.debug("Login successful.")
 
     def _calculate_checksum(self, data):
         sum_val = 0
@@ -130,7 +140,6 @@ class RackLinkAPI:
             raise RackLinkNACKError(error_code, error_msg)
 
     async def _read_message(self):
-        # Read one full message
         header = await self.reader.readexactly(1)
         if header[0] != 0xfe:
             raise RackLinkAPIError("Invalid response: Missing FE header")
@@ -150,36 +159,34 @@ class RackLinkAPI:
         return data_envelope
 
     async def _read_loop(self):
+        _LOGGER.debug("Read loop started.")
         try:
             while not self._stopped and self.connected:
                 msg = await self._read_message()
-                # Handle PING
+                # Handle PING from device
                 if msg[1] == 0x01 and msg[2] == 0x01:
-                    # This is a ping from device, respond with pong
-                    # Ping Response: command=0x01, subcommand=0x10
+                    _LOGGER.debug("Received PING from device, sending PONG.")
                     pong = self._form_message(0x01, 0x10)
                     self.writer.write(pong)
                     await self.writer.drain()
                     continue
 
-                # Check if this is a response to our last command
                 self._check_for_nack(msg)
 
-                # If we have a _response_future waiting, set its result
                 if self._response_future and not self._response_future.done():
                     self._response_future.set_result(msg)
-        except (asyncio.CancelledError, asyncio.IncompleteReadError, RackLinkAPIError):
-            # Connection lost or stopped
+        except (asyncio.CancelledError, asyncio.IncompleteReadError, RackLinkAPIError) as e:
+            _LOGGER.debug("Read loop ended due to error: %s", e)
             self.connected = False
         finally:
             self.connected = False
+            _LOGGER.debug("Read loop exited.")
 
     async def _send_and_receive(self, command, subcommand, data=b""):
         if not self.connected:
             await self.connect_persistent()
 
         async with self._lock:
-            # Ensure no overlapping commands
             if self._response_future and not self._response_future.done():
                 self._response_future.cancel()
 
@@ -187,26 +194,26 @@ class RackLinkAPI:
             message = self._form_message(command, subcommand, data)
             for attempt in range(MAX_RETRIES):
                 try:
+                    _LOGGER.debug("Sending command: cmd=0x%02X sub=0x%02X data=%s", command, subcommand, data.hex())
                     self.writer.write(message)
                     await self.writer.drain()
-                    # Wait for response
                     resp = await asyncio.wait_for(self._response_future, timeout=10)
                     return resp
                 except (asyncio.TimeoutError, RackLinkAPIError, asyncio.IncompleteReadError):
+                    _LOGGER.debug("Failed attempt to send/receive, retrying...")
                     await self.close()
                     await asyncio.sleep(RECONNECT_DELAY)
                     await self.connect_persistent()
-                    # Retry sending
                     self._response_future = asyncio.get_event_loop().create_future()
                     continue
             raise RackLinkAPIError("Failed to get response after retries")
 
     async def ping(self):
-        # Send ping and expect pong
         resp = await self._send_and_receive(0x01, 0x01)
-        # Expect pong: 0x01 0x10
         if resp[1] == 0x01 and resp[2] == 0x10:
+            _LOGGER.debug("Ping successful, received Pong.")
             return True
+        _LOGGER.debug("Ping failed.")
         return False
 
     async def get_outlet_count(self):
@@ -218,6 +225,7 @@ class RackLinkAPI:
             for b in outlet_status:
                 if b == ord('C') or b == ord('N'):
                     count += 1
+            _LOGGER.debug("Outlet count: %d", count)
             return count
         raise RackLinkAPIError("Unexpected response for outlet count")
 
@@ -231,7 +239,9 @@ class RackLinkAPI:
         resp = await self._send_and_receive(0x20, 0x02, bytes([outlet]))
         if resp[1] == 0x20 and resp[2] in (0x10, 0x12, 0x30):
             state = resp[4]
-            return state == 0x01
+            on = state == 0x01
+            _LOGGER.debug("Outlet %d status: %s", outlet, "ON" if on else "OFF")
+            return on
         raise RackLinkAPIError("Unexpected outlet status response")
 
     async def set_outlet_state(self, outlet, on):
@@ -239,5 +249,6 @@ class RackLinkAPI:
         data = bytes([outlet, state]) + b'0000'
         resp = await self._send_and_receive(0x20, 0x01, data)
         if resp[1] == 0x20 and resp[2] == 0x10:
+            _LOGGER.debug("Successfully set outlet %d to %s", outlet, "ON" if on else "OFF")
             return True
         raise RackLinkAPIError("Failed to set outlet state")

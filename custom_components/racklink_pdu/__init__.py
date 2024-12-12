@@ -2,7 +2,7 @@ import logging
 from datetime import timedelta
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from .const import DOMAIN, DEFAULT_POLL_INTERVAL
 from .api import RackLinkAPI, RackLinkAPIError
 
@@ -14,14 +14,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     ip = entry.data["ip"]
     name = entry.data["name"]
     api = RackLinkAPI(ip)
+
     await api.connect_persistent()
 
     async def async_update_data():
-        # Try a ping to ensure connection is alive
+        # Check connection with ping
         try:
             await api.ping()
         except RackLinkAPIError:
             # Try reconnect
+            _LOGGER.debug("Ping failed, reconnecting...")
             await api.close()
             try:
                 await api.connect_persistent()
