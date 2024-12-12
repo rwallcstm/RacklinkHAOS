@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import timedelta
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -29,7 +30,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         _LOGGER,
         name="racklink_pdu",
         update_method=async_update_data,
-        update_interval=asyncio.timedelta(seconds=DEFAULT_POLL_INTERVAL),
+        update_interval=timedelta(seconds=DEFAULT_POLL_INTERVAL),
     )
 
     hass.data.setdefault(DOMAIN, {})
