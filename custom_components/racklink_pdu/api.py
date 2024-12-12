@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from .const import MAX_RETRIES, RECONNECT_DELAY
+from .const import MAX_RETRIES, RECONNECT_DELAY, HANDSHAKE_TIMEOUT
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -28,9 +28,10 @@ class RackLinkAPI:
         self._response_future = None
         self._read_task = None
         self._stopped = False
+        self._handshake_done = None  # Future that completes when device PING is received and PONG is sent
 
     async def connect_persistent(self):
-        """Connect and login, start read loop, and perform initial handshake."""
+        """Connect and login, wait for device PING, respond with PONG, completing the handshake."""
         await self.close()
         for attempt in range(MAX_RETRIES):
             try:
@@ -39,12 +40,12 @@ class RackLinkAPI:
                 await self._login()
                 self.connected = True
                 self._stopped = False
+                # Prepare handshake future
+                self._handshake_done = asyncio.get_event_loop().create_future()
                 self._read_task = asyncio.create_task(self._read_loop())
-                # After login, we either wait for the device to send a PING or we initiate a ping to finalize handshake.
-                # Send a ping to ensure the device is ready.
-                _LOGGER.debug("Sending initial ping after login.")
-                await self.ping()
-                _LOGGER.debug("Initial handshake complete.")
+                # Wait for handshake (device ping and our pong) to complete
+                await asyncio.wait_for(self._handshake_done, timeout=HANDSHAKE_TIMEOUT)
+                _LOGGER.debug("Handshake complete.")
                 return
             except Exception as e:
                 _LOGGER.debug("Connection attempt failed: %s", e)
@@ -75,7 +76,7 @@ class RackLinkAPI:
         status = resp[3]
         if status != 0x01:
             raise RackLinkAuthenticationError("Invalid credentials")
-        _LOGGER.debug("Login successful.")
+        _LOGGER.debug("Login successful. Waiting for device to send PING...")
 
     def _calculate_checksum(self, data):
         sum_val = 0
@@ -163,18 +164,26 @@ class RackLinkAPI:
         try:
             while not self._stopped and self.connected:
                 msg = await self._read_message()
-                # Handle PING from device
+
+                # Check if this is the device's initial PING after login
+                # This should be a PING SET from device: 0x01 command, 0x01 subcmd
                 if msg[1] == 0x01 and msg[2] == 0x01:
-                    _LOGGER.debug("Received PING from device, sending PONG.")
+                    _LOGGER.debug("Received PING (SET) from device, responding with PONG (RESPONSE).")
                     pong = self._form_message(0x01, 0x10)
                     self.writer.write(pong)
                     await self.writer.drain()
+                    # Handshake done once we send pong
+                    if self._handshake_done and not self._handshake_done.done():
+                        self._handshake_done.set_result(True)
                     continue
+
+                # Device may send unsolicited messages later, handle them if needed
 
                 self._check_for_nack(msg)
 
                 if self._response_future and not self._response_future.done():
                     self._response_future.set_result(msg)
+
         except (asyncio.CancelledError, asyncio.IncompleteReadError, RackLinkAPIError) as e:
             _LOGGER.debug("Read loop ended due to error: %s", e)
             self.connected = False
@@ -194,13 +203,13 @@ class RackLinkAPI:
             message = self._form_message(command, subcommand, data)
             for attempt in range(MAX_RETRIES):
                 try:
-                    _LOGGER.debug("Sending command: cmd=0x%02X sub=0x%02X data=%s", command, subcommand, data.hex())
+                    _LOGGER.debug("Sending command: cmd=0x%02X sub=0x%02X data=%s", command, subcommand, data.hex() if data else "")
                     self.writer.write(message)
                     await self.writer.drain()
                     resp = await asyncio.wait_for(self._response_future, timeout=10)
                     return resp
-                except (asyncio.TimeoutError, RackLinkAPIError, asyncio.IncompleteReadError):
-                    _LOGGER.debug("Failed attempt to send/receive, retrying...")
+                except (asyncio.TimeoutError, RackLinkAPIError, asyncio.IncompleteReadError) as e:
+                    _LOGGER.debug("Failed attempt to send/receive (%s), retrying...", e)
                     await self.close()
                     await asyncio.sleep(RECONNECT_DELAY)
                     await self.connect_persistent()
@@ -209,6 +218,8 @@ class RackLinkAPI:
             raise RackLinkAPIError("Failed to get response after retries")
 
     async def ping(self):
+        # We can send our own ping if needed, but per doc we must respond to device ping first.
+        # Still implement if we want to test connectivity later.
         resp = await self._send_and_receive(0x01, 0x01)
         if resp[1] == 0x01 and resp[2] == 0x10:
             _LOGGER.debug("Ping successful, received Pong.")

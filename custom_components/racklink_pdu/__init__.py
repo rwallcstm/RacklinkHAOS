@@ -18,11 +18,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     await api.connect_persistent()
 
     async def async_update_data():
-        # Check connection with ping
+        # Try a ping to ensure connection remains valid
         try:
             await api.ping()
         except RackLinkAPIError:
-            # Try reconnect
             _LOGGER.debug("Ping failed, reconnecting...")
             await api.close()
             try:
@@ -30,7 +29,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             except RackLinkAPIError:
                 return {"reachable": False, "outlets": {}, "count": 0, "name": name}
 
-        # If reachable, get status
         try:
             count = await api.get_outlet_count()
             outlets = list(range(1, count+1))
