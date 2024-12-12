@@ -1,9 +1,12 @@
 import asyncio
+import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from .const import DOMAIN, DEFAULT_POLL_INTERVAL
 from .api import RackLinkAPI, RackLinkAPIError
+
+_LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = ["switch"]
 
@@ -23,7 +26,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     coordinator = DataUpdateCoordinator(
         hass,
-        hass.helpers.logging.logger,
+        _LOGGER,
         name="racklink_pdu",
         update_method=async_update_data,
         update_interval=asyncio.timedelta(seconds=DEFAULT_POLL_INTERVAL),
