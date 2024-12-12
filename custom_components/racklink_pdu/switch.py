@@ -4,7 +4,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN
-from .api import RackLinkAPI, RackLinkAPIError
+from .api import RackLinkAPIError
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
     coordinator = hass.data[DOMAIN][entry.entry_id]
@@ -24,7 +24,6 @@ class RackLinkOutletSwitch(CoordinatorEntity, SwitchEntity):
         self._outlet_number = outlet_number
         self._attr_name = f"{device_name} Outlet {outlet_number}"
         self._attr_unique_id = f"{self._ip}_outlet_{self._outlet_number}"
-        self._api = RackLinkAPI(ip)
         self._device_name = device_name
 
     @property
@@ -50,8 +49,9 @@ class RackLinkOutletSwitch(CoordinatorEntity, SwitchEntity):
         await self._set_outlet_state(False)
 
     async def _set_outlet_state(self, on):
+        api = self.coordinator.api
         try:
-            await self.hass.async_add_executor_job(self._api.set_outlet_state, self._outlet_number, on)
+            await api.set_outlet_state(self._outlet_number, on)
         except RackLinkAPIError:
             pass
         await self.coordinator.async_request_refresh()
