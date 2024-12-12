@@ -1,28 +1,57 @@
 from homeassistant.components.switch import SwitchEntity
-from .helpers.socket_helper import send_command
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN
+from .api import RackLinkAPI, RackLinkAPIError
 
-async def async_setup_entry(hass, entry, async_add_entities):
-    """Set up switches dynamically."""
-    data = hass.data[DOMAIN][entry.entry_id]
-    outlets = await query_outlets(data["ip"])  # Query PDU outlets
-    switches = [RackLinkOutletSwitch(data, outlet) for outlet in outlets]
-    async_add_entities(switches)
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    name = coordinator.data["name"]
+    count = coordinator.data.get("count", 0)
+    ip = entry.data["ip"]
 
-async def query_outlets(ip):
-    """Query the PDU for its outlets."""
-    # Placeholder logic; replace with actual command
-    return ["Outlet 1", "Outlet 2", "Outlet 3"]
+    entities = []
+    for i in range(1, count+1):
+        entities.append(RackLinkOutletSwitch(coordinator, ip, i, name))
+    async_add_entities(entities, True)
 
-class RackLinkOutletSwitch(SwitchEntity):
-    """Representation of a PDU outlet."""
+class RackLinkOutletSwitch(CoordinatorEntity, SwitchEntity):
+    def __init__(self, coordinator, ip, outlet_number, device_name):
+        super().__init__(coordinator)
+        self._ip = ip
+        self._outlet_number = outlet_number
+        self._attr_name = f"{device_name} Outlet {outlet_number}"
+        self._attr_unique_id = f"{self._ip}_outlet_{self._outlet_number}"
+        self._api = RackLinkAPI(ip)
+        self._device_name = device_name
 
-    def __init__(self, data, outlet):
-        self._data = data
-        self._outlet = outlet
+    @property
+    def is_on(self):
+        data = self.coordinator.data
+        if not data["reachable"]:
+            return False
+        return data["outlets"].get(self._outlet_number, False)
+
+    @property
+    def device_info(self):
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._ip)},
+            name=self._device_name,
+            manufacturer="RackLink",
+            model="Select Series PDU",
+        )
 
     async def async_turn_on(self):
-        await send_command(self._data["ip"], f"turn_on:{self._outlet}")
+        await self._set_outlet_state(True)
 
     async def async_turn_off(self):
-        await send_command(self._data["ip"], f"turn_off:{self._outlet}")
+        await self._set_outlet_state(False)
+
+    async def _set_outlet_state(self, on):
+        try:
+            await self.hass.async_add_executor_job(self._api.set_outlet_state, self._outlet_number, on)
+        except RackLinkAPIError:
+            pass
+        await self.coordinator.async_request_refresh()

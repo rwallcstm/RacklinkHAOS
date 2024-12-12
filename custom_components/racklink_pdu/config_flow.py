@@ -1,46 +1,30 @@
-from homeassistant import config_entries
-from homeassistant.core import callback
-from homeassistant.helpers import config_validation as cv
 import voluptuous as vol
+from homeassistant import config_entries
 from .const import DOMAIN
-from .helpers.socket_helper import test_connection
+from .api import RackLinkAPI, RackLinkAPIError
 
-class RackLinkPDUConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for RackLink PDU."""
+DATA_SCHEMA = vol.Schema({
+    vol.Required("ip"): str,
+    vol.Required("name"): str
+})
+
+class RackLinkConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+    VERSION = 1
 
     async def async_step_user(self, user_input=None):
-        """Handle the initial setup step."""
-        errors = {}
         if user_input is not None:
+            ip = user_input["ip"]
+            name = user_input["name"]
             try:
-                await test_connection(user_input["ip"])
-                return self.async_create_entry(title=user_input["name"], data=user_input)
-            except Exception:
-                errors["base"] = "cannot_connect"
+                api = RackLinkAPI(ip)
+                count = await self.hass.async_add_executor_job(api.get_outlet_count)
+            except RackLinkAPIError:
+                return self.async_show_form(
+                    step_id="user", data_schema=DATA_SCHEMA, errors={"base": "cannot_connect"}
+                )
 
-        schema = vol.Schema({
-            vol.Required("name"): cv.string,
-            vol.Required("ip"): cv.string,
-        })
+            await self.async_set_unique_id(ip)
+            self._abort_if_unique_id_configured()
+            return self.async_create_entry(title=name, data={"ip": ip, "name": name})
 
-        return self.async_show_form(
-            step_id="user",
-            data_schema=schema,
-            errors=errors,
-        )
-
-    @staticmethod
-    @callback
-    def async_get_options_flow(config_entry):
-        return RackLinkPDUOptionsFlow(config_entry)
-
-class RackLinkPDUOptionsFlow(config_entries.OptionsFlow):
-    """Handle options flow for RackLink PDU."""
-
-    async def async_step_init(self, user_input=None):
-        """Handle options flow."""
-        if user_input:
-            return self.async_create_entry(title="", data=user_input)
-
-        schema = vol.Schema({})
-        return self.async_show_form(step_id="init", data_schema=schema)
+        return self.async_show_form(step_id="user", data_schema=DATA_SCHEMA)
